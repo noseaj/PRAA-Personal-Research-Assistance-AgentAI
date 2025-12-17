@@ -27,3 +27,6 @@
 
 ## LLM 모델
 - meta-llama/llama-3.1-8b-instruct
+
+## python 버전
+- 3.10
