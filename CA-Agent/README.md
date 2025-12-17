@@ -1,8 +1,8 @@
-# Code-Aware Research Assistant (CA-Agent)
+# Code-Analysis Research Assistant (CA-Agent)
 
 논문 메소드 기반 Github 코드와 사용자 코드를 분석하고,  
 사용자 질의에 맞춰 **논문 · 레퍼런스 · 내 코드 분석 결과를 RAG 방식으로 종합**하여  
-연구 및 구현 관점에서 설명해주는 **Multi-Agent 기반 Code-Aware Research Assistant**
+연구 및 구현 관점에서 설명해주는 **Multi-Agent 기반 Code-Analysis Research Assistant**
 
 ---
 
