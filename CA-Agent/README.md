@@ -21,7 +21,7 @@
 
 ## 전체 아키텍처 개요
 
-
+![alt text](CA-Architecture.png)
 
 ---
 
