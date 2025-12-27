@@ -2,6 +2,9 @@ import pickle
 from langchain_openai import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage
 from config import LLM_CONFIG
+from notion.preprocessing import LangChainChunkingEmbedding
+
+EMBEDDING_MODEL = LLM_CONFIG["embedding_model"]
 
 # pkl 파일 로드
 def load_research_data(file_path):
@@ -58,7 +61,15 @@ def save_as_json(result, pkl_path, filename="analysis_result.json"):
         print(f"[OK] JSON saved: {filename}")
     
 
-result = study_agent("embeddings.pkl")
+embedding_db = study_agent("embeddings.pkl")
+
+user_query = "특정 실험 결과는?"
+processor = LangChainChunkingEmbedding(
+    embedding_model = EMBEDDING_MODEL
+    )
+
+query_embedding = processor.process(user_query)
+
 
 # TXT 저장
 save_as_text(result, "analysis_result.txt")
