@@ -1,0 +1,8 @@
+{
+    "NotionAPIKey": "[Your Notion Integration API Key]",
+    "NotionDatabaseID": "[Your Notion Database ID (From shared link)]",
+    "OpenRouterAPIKey": "[Your OpenRouter API Key]",
+    "OpenRouterURL": "https://openrouter.ai/api/v1",
+    "SemanticScholarAPIKey": "[Your SemanticsScholarAPIKey]",
+    "GitHubToken": "[Github private token]"
+}
