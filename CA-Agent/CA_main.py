@@ -1,5 +1,7 @@
 import os
 import re
+import json
+from datetime import datetime
 
 from notion.input_loader import load_tasks
 from notion.output_writer import write_qna_answer
@@ -11,6 +13,33 @@ from agents.mycode_agent import MyCodeAgent
 from agents.integration_agent import IntegrationAgent
 from agents.answer_agent import AnswerAgent
 
+
+# ===============================
+# Answer Output
+# ===============================
+def write_result_json(
+    paper_name: str,
+    my_code_path: str,
+    user_query: str,
+    answer: str,
+    output_dir: str = "CA-outputs"
+):
+    os.makedirs(output_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = os.path.join(output_dir, f"analysis_result_{timestamp}.json")
+
+    result = {
+        "paper_name": paper_name,
+        "my_code_path": my_code_path,
+        "user_query": user_query,
+        "answer": answer,
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    return output_path
 
 # ===============================
 # User query helpers
@@ -31,6 +60,16 @@ def extract_local_code_path(user_query: str):
         return match.group(1)
 
     return None
+
+
+# ===============================
+# Task name
+# ===============================
+
+def get_paper_name(reference_task):
+    if not reference_task:
+        return None
+    return reference_task.get("title") or reference_task.get("paper_name")
 
 
 # ===============================
@@ -132,14 +171,25 @@ def run_pipeline(user_query: str):
     )
 
     print("\n=== ANSWER ===\n")
-    print(final_answer)
+    # print(final_answer)
 
     write_qna_answer(
         question=user_query,
         answer=final_answer,
     )
 
+    paper_name = get_paper_name(reference_task)
+    my_code_path = local_code_path
 
+    json_path = write_result_json(
+        paper_name=paper_name,
+        my_code_path=my_code_path,
+        user_query=user_query,
+        answer=final_answer,
+    )
+
+    print(json_path)
+    print(f"\n📄 Result JSON saved to: {json_path}")    
 # ===============================
 # Entry point
 # ===============================
