@@ -288,14 +288,4 @@ PRAA/
 └── requirements.txt           # 의존성
 ```
 
----
 
-## 🤝 기여
-
-이슈 및 PR 환영합니다!
-
----
-
-## 📄 라이선스
-
-MIT License
