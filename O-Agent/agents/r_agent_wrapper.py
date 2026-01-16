@@ -53,17 +53,33 @@ class RAgentWrapper:
             escaped_query = search_query.replace("'", "\\'").replace('"', '\\"')
             keywords_json = json.dumps(search_keywords or [], ensure_ascii=False)
             
-            # subprocess로 R-Agent 실행
+            # subprocess로 R-Agent 실행 (LLM 클라이언트 포함)
+            project_root = self.r_agent_path.parent
             script = f"""
 import sys
 import json
 sys.path.insert(0, '{self.r_agent_path}')
+sys.path.insert(0, '{project_root}')
 
 try:
     from agents.research_agent import RAgent, AgentConfig
+    from openai import OpenAI
+    
+    # API 키 로드
+    apikey_path = '{project_root}/apikey.json'
+    try:
+        with open(apikey_path, 'r') as f:
+            api_keys = json.load(f)
+        openrouter_key = api_keys.get('OpenRouterAPIKey', '')
+        openrouter_url = api_keys.get('OpenRouterURL', 'https://openrouter.ai/api/v1')
+        
+        # LLM 클라이언트 초기화
+        llm_client = OpenAI(base_url=openrouter_url, api_key=openrouter_key) if openrouter_key else None
+    except:
+        llm_client = None
     
     cfg = AgentConfig(output_dir='{self.r_agent_path}/output')
-    agent = RAgent(cfg)
+    agent = RAgent(cfg, llm_client=llm_client)
     
     # 외부에서 전달받은 키워드 사용
     keywords = {keywords_json}
@@ -166,6 +182,14 @@ except Exception as e:
         output.append(f"\n🔍 검색 쿼리: {', '.join(result.get('generated_queries', []))}")
         output.append(f"📊 발견한 논문: {result.get('stats', {}).get('papers_returned', 0)}편\n")
         
+        # 종합 분석 추가
+        if result.get("overall_analysis"):
+            output.append("\n" + "="*60)
+            output.append("📝 종합 분석")
+            output.append("="*60)
+            output.append(result["overall_analysis"])
+            output.append("")
+        
         for i, paper in enumerate(result["results"][:3], 1):  # 상위 3편만
             output.append(f"\n{'='*60}")
             output.append(f"📄 논문 {i}: {paper.get('title', 'N/A')}")
@@ -175,12 +199,17 @@ except Exception as e:
                 output.append(f"   저자: {', '.join(authors[:3])}")
             output.append(f"   URL: {paper.get('paper_url', 'N/A')}")
             
+            # LLM 분석 결과 추가
+            if paper.get("llm_analysis"):
+                output.append(f"\n   🔬 논문 분석:")
+                output.append(f"   {paper['llm_analysis']}")
+            
             if paper.get("short_summary"):
                 summary = paper["short_summary"]
                 if summary.get('problem'):
-                    output.append(f"\n   문제: {summary['problem'][:100]}...")
+                    output.append(f"\n   문제: {summary['problem'][:150]}...")
                 if summary.get('method'):
-                    output.append(f"   방법: {summary['method'][:100]}...")
+                    output.append(f"   방법: {summary['method'][:150]}...")
             
             if paper.get("code"):
                 output.append(f"\n   🔗 GitHub 레포지토리:")

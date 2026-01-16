@@ -1,6 +1,14 @@
 # APIKEY_INFO.json
 apikey.json
+
+# Reports
 /report
+
+# Agent outputs
+CA-Agent/CA-outputs/
+R-Agent/output/
+SA-Agent/output/
+**/output/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

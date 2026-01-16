@@ -237,12 +237,15 @@ def extract_github_links_with_paragraph_context(text: str) -> List[Dict[str, Any
 
 class Summarizer:
     """
-    v0: LLM 없이도 동작하도록 기본은 heuristic/stub.
+    LLM 기반 논문 분석 요약기
     """
+    def __init__(self, llm_client: OpenAI = None, model: str = "anthropic/claude-sonnet-4"):
+        self.llm_client = llm_client
+        self.model = model
 
     def short_summary_from_abstract(self, abstract: str) -> Dict[str, str]:
         """
-        아주 짧게 Problem/Method/Strength 템플릿에 맞춰 생성.
+        LLM을 사용하여 논문 초록 분석
         """
         abs_t = (abstract or "").strip()
         if not abs_t:
@@ -251,23 +254,80 @@ class Summarizer:
                 "method": "",
                 "strength": "",
             }
+        
+        # LLM이 있으면 사용
+        if self.llm_client:
+            try:
+                prompt = f"""다음 논문 초록을 분석하여 JSON 형식으로 요약해주세요.
 
-        # 매우 단순 규칙: 첫 문장 problem, 다음 문장 method 후보
+초록:
+{abs_t[:2000]}
+
+다음 형식의 JSON만 출력:
+{{
+    "problem": "이 논문이 해결하려는 문제 (1-2문장)",
+    "method": "제안하는 방법/핵심 기여 (1-2문장)",
+    "strength": "장점 또는 실험 결과 (1-2문장)"
+}}"""
+                
+                response = self.llm_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                    max_tokens=500
+                )
+                
+                result_text = response.choices[0].message.content.strip()
+                json_match = re.search(r'\{[^}]+\}', result_text, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group(0))
+            except Exception as e:
+                print(f"[Summarizer] LLM 요약 실패: {e}")
+        
+        # Fallback: 규칙 기반
         sents = re.split(r"(?<=[.!?])\s+", abs_t)
         sents = [s.strip() for s in sents if s.strip()]
-        problem = sents[0] if len(sents) >= 1 else ""
-        method = sents[1] if len(sents) >= 2 else ""
-        strength = sents[2] if len(sents) >= 3 else ""
         return {
-            "problem": problem,
-            "method": method,
-            "strength": strength,
+            "problem": sents[0] if len(sents) >= 1 else "",
+            "method": sents[1] if len(sents) >= 2 else "",
+            "strength": sents[2] if len(sents) >= 3 else "",
         }
+    
+    def analyze_paper(self, title: str, abstract: str, authors: List[str] = None) -> str:
+        """
+        논문 전체 분석 (LLM 기반)
+        """
+        if not self.llm_client:
+            return ""
+        
+        try:
+            prompt = f"""다음 논문을 분석하여 한국어로 요약해주세요.
+
+제목: {title}
+저자: {', '.join(authors[:5]) if authors else 'N/A'}
+초록: {(abstract or '')[:2000]}
+
+다음 형식으로 분석:
+1. **핵심 아이디어**: 이 논문의 주요 기여는 무엇인가요? (2-3문장)
+2. **기술적 접근**: 어떤 방법론/아키텍처를 사용하나요? (2-3문장)
+3. **연구 의의**: 이 연구가 중요한 이유는? (1-2문장)
+4. **활용 가능성**: 어떤 분야/문제에 적용할 수 있나요? (1-2문장)"""
+            
+            response = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=800
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[Summarizer] 논문 분석 실패: {e}")
+            return ""
 
     def summarize_code_role(self, context_paragraph: str, paper_title: str = "") -> str:
         """
         URL이 포함된 문단(context) 기반으로 '이 코드가 어떤 역할인지' 1~2문장 요약.
-        현재는 stub. (LLM 붙이면 여기 교체)
         """
         c = (context_paragraph or "").lower()
         hints = []
@@ -283,6 +343,55 @@ class Summarizer:
         if hints:
             return f"논문에서 공개한 {', '.join(sorted(set(hints)))}를 제공하는 레포로 보입니다."
         return "논문에서 제안한 방법 또는 실험 재현을 위한 공개 레포로 보입니다."
+    
+    def generate_overall_analysis(self, papers: List[Dict], question: str) -> str:
+        """
+        검색된 논문들에 대한 종합 분석 생성
+        """
+        if not self.llm_client or not papers:
+            return ""
+        
+        try:
+            paper_summaries = []
+            for i, p in enumerate(papers[:5], 1):
+                paper_summaries.append(f"""
+{i}. {p.get('title', 'N/A')} ({p.get('year', 'N/A')})
+   - 초록: {(p.get('abstract') or '')[:300]}...
+   - GitHub: {p.get('code', [{}])[0].get('repo_url', 'N/A') if p.get('code') else 'N/A'}""")
+            
+            papers_text = "\n".join(paper_summaries)
+            
+            prompt = f"""사용자 질문: {question}
+
+검색된 논문들:
+{papers_text}
+
+위 논문들을 바탕으로 다음을 포함한 종합 분석을 작성해주세요 (한국어):
+
+## 📊 검색 결과 요약
+- 검색된 논문 수와 주요 특징
+
+## 🔬 연구 동향 분석
+- 이 분야의 주요 접근 방법들
+- 최근 연구 트렌드
+
+## 💡 추천 순위
+- 가장 참고할 만한 논문 순위와 이유
+
+## 🔗 GitHub 코드 활용
+- 코드가 공개된 논문과 활용 방법"""
+            
+            response = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1500
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[Summarizer] 종합 분석 실패: {e}")
+            return ""
 
 
 # =========================
@@ -479,11 +588,12 @@ class GitHubRepoAnalyzer:
 # =========================
 
 class RAgent:
-    def __init__(self, cfg: AgentConfig):
+    def __init__(self, cfg: AgentConfig, llm_client: OpenAI = None):
         self.cfg = cfg
         self.planner = QueryPlanner()
         self.s2 = SemanticScholarClient(cfg)
-        self.summarizer = Summarizer()
+        self.llm_client = llm_client
+        self.summarizer = Summarizer(llm_client=llm_client)
         self.repo_analyzer = GitHubRepoAnalyzer(cfg)
 
     def run(self, question: str, external_keywords: list = None) -> Dict[str, Any]:
@@ -543,11 +653,24 @@ class RAgent:
             # GitHub URL ≥ 1개인 논문만 포함
             if processed.get("code") and len(processed["code"]) > 0:
                 results.append(processed)
+        
+        # 5) 각 논문에 대한 LLM 상세 분석 추가
+        for paper in results:
+            analysis = self.summarizer.analyze_paper(
+                title=paper.get("title", ""),
+                abstract=paper.get("abstract", ""),
+                authors=paper.get("authors", [])
+            )
+            paper["llm_analysis"] = analysis
+        
+        # 6) 종합 분석 생성
+        overall_analysis = self.summarizer.generate_overall_analysis(results, question)
 
         return {
             "agent": "R-Agent (Ref Researcher)",
             "input_question": question,
             "generated_queries": queries,
+            "overall_analysis": overall_analysis,  # 종합 분석 추가
             "results": results,
             "stats": {
                 "candidates_collected": len(candidates),
