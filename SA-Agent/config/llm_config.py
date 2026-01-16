@@ -1,5 +1,5 @@
 """
-CA-Agent LLM Config
+SA-Agent LLM Config
 리팩토링: shared.config 사용 (하위 호환성 유지)
 """
 import sys

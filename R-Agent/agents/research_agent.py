@@ -32,7 +32,7 @@ class AgentConfig:
     max_candidates_per_query: int = 20         # 쿼리당 논문 후보
     max_total_candidates: int = 60             # 전체 후보 상한(너무 많이 다운받지 않게)
     target_papers_with_github: int = 3         # GitHub URL 가진 논문 최소 몇 편 반환?
-    sleep_between_requests: float = 0.5        # rate-limit 완화
+    sleep_between_requests: float = 1.1        # rate-limit 완화 (Semantic Scholar: 1 req/sec)
     pdf_download_timeout_sec: int = 30
 
     # PDF 처리
@@ -86,28 +86,35 @@ def parse_github_owner_repo(repo_url: str) -> Optional[Tuple[str, str]]:
 class QueryPlanner:
     """
     v0: 룰 기반 planner
-    - 질문에서 키워드 추출(단순) + 약간의 확장 쿼리 생성
-    - 나중에 LLM planner로 교체 가능
+    - 질문에서 영어 키워드만 추출 (한글 제거!)
+    - Semantic Scholar는 영어 검색에 최적화되어 있음
     """
     def plan(self, question: str, max_queries: int = 5) -> List[str]:
         q = (question or "").strip()
         if not q:
             return []
 
-        # 아주 단순한 키워드 추출(영문/숫자/한글 토큰)
-        tokens = re.findall(r"[A-Za-z0-9가-힣]+", q.lower())
-        tokens = [t for t in tokens if len(t) >= 2]
-        tokens = tokens[:8]  # 과도한 길이 제한
+        # 영어/숫자만 추출 (한글 제거! - Semantic Scholar 호환성)
+        english_tokens = re.findall(r"[A-Za-z][A-Za-z0-9]*", q)
+        # 대소문자 유지 (DETR, ResNet 등 고유명사 보존)
+        english_tokens = [t for t in english_tokens if len(t) >= 2]
+        english_tokens = english_tokens[:8]  # 과도한 길이 제한
 
-        base = " ".join(tokens) if tokens else q
+        # 영어 토큰이 없으면 원본에서 영어만 추출 시도
+        if not english_tokens:
+            # 숫자+영어 조합도 허용
+            english_tokens = re.findall(r"[A-Za-z0-9]+", q)
+            english_tokens = [t for t in english_tokens if re.search(r"[A-Za-z]", t)]
 
-        # 확장 쿼리(코드/구현/오픈소스 힌트)
+        base = " ".join(english_tokens) if english_tokens else q
+
+        # 확장 쿼리 (영어만 사용)
         queries = [
             base,
-            f"{base} code implementation github",
-            f"{base} open source repository",
-            f"{base} dataset benchmark",
-            f"{base} reproducibility code",
+            f"{base} deep learning",
+            f"{base} neural network github",
+            f"{base} machine learning code",
+            f"{base} paper implementation",
         ]
 
         # 중복 제거 + 길이 제한
@@ -286,6 +293,7 @@ class GitHubRepoAnalyzer:
     """
     v0: clone 없이 GitHub API로 tree/README를 보고
     - 주요 폴더/파일 후보를 규칙 기반으로 뽑아준다.
+    - 논문 제목으로 GitHub 레포 검색 기능 추가
     """
     def __init__(self, cfg: AgentConfig):
         self.cfg = cfg
@@ -295,6 +303,87 @@ class GitHubRepoAnalyzer:
         if self.cfg.github_token:
             h["Authorization"] = f"Bearer {self.cfg.github_token}"
         return h
+    
+    def search_repo_by_paper(self, paper_title: str, authors: List[str] = None) -> Optional[str]:
+        """
+        논문 제목으로 GitHub 레포지토리 검색 (GitHub Search API)
+        
+        Args:
+            paper_title: 논문 제목
+            authors: 저자 목록 (선택)
+            
+        Returns:
+            가장 관련성 높은 GitHub URL 또는 None
+        """
+        try:
+            # 1. 논문 제목에서 핵심 키워드/약어 추출 (DETR, BERT, GPT 등)
+            acronyms = re.findall(r'\b[A-Z]{2,}[a-z]*\b', paper_title)  # DETR, BERT 등
+            
+            # 2. 여러 검색 쿼리 시도 (약어 우선)
+            search_queries = []
+            
+            # 약어가 있으면 약어로 먼저 검색
+            if acronyms:
+                search_queries.append(" ".join(acronyms))
+            
+            # 전체 제목 검색
+            search_queries.append(paper_title)
+            
+            # 핵심 키워드만 검색 (detection, transformer 등)
+            key_words = [w for w in re.findall(r'\b\w+\b', paper_title.lower()) 
+                        if len(w) >= 4 and w not in ['with', 'from', 'using', 'based', 'end-to-end', 'towards']]
+            if key_words:
+                search_queries.append(" ".join(key_words[:5]))
+            
+            url = "https://api.github.com/search/repositories"
+            
+            for query in search_queries:
+                params = {
+                    "q": query,
+                    "sort": "stars",
+                    "order": "desc",
+                    "per_page": 10
+                }
+                
+                r = requests.get(url, params=params, headers=self._headers(), timeout=15)
+                time.sleep(self.cfg.sleep_between_requests)
+                
+                if r.status_code != 200:
+                    continue
+                
+                data = r.json()
+                items = data.get("items", [])
+                
+                # 가장 관련성 높은 레포 찾기
+                for item in items:
+                    repo_name = item.get("name", "").lower()
+                    repo_desc = (item.get("description") or "").lower()
+                    full_name = item.get("full_name", "").lower()
+                    stars = item.get("stargazers_count", 0)
+                    
+                    # 논문 약어가 레포 이름에 정확히 포함되어 있는지 (DETR → detr)
+                    acronym_match = any(acr.lower() in repo_name for acr in acronyms)
+                    
+                    # 유명 AI 연구 기관 레포인지 확인
+                    trusted_orgs = ['facebookresearch', 'google', 'huggingface', 'openai', 
+                                   'microsoft', 'pytorch', 'tensorflow', 'nvidia', 'meta-llama']
+                    from_trusted = any(org in full_name for org in trusted_orgs)
+                    
+                    # 선택 기준:
+                    # 1. 약어가 레포 이름에 있고 스타 500개 이상
+                    # 2. 신뢰 기관 레포이고 스타 1000개 이상
+                    # 3. 스타 5000개 이상
+                    if (acronym_match and stars >= 500) or \
+                       (from_trusted and stars >= 1000) or \
+                       (stars >= 5000):
+                        print(f"[GitHub Search] 매칭: {item.get('html_url')} (⭐{stars})")
+                        return item.get("html_url")
+            
+            return None
+            
+        except Exception as e:
+            print(f"[GitHub Search] 검색 실패: {e}")
+            return None
 
     def get_default_branch(self, owner: str, repo: str) -> Optional[str]:
         url = f"https://api.github.com/repos/{owner}/{repo}"
@@ -397,11 +486,33 @@ class RAgent:
         self.summarizer = Summarizer()
         self.repo_analyzer = GitHubRepoAnalyzer(cfg)
 
-    def run(self, question: str) -> Dict[str, Any]:
+    def run(self, question: str, external_keywords: list = None) -> Dict[str, Any]:
+        """
+        R-Agent 실행
+        
+        Args:
+            question: 연구 질문 (원본)
+            external_keywords: O-Agent에서 LLM이 추출한 영어 키워드 목록 (Optional)
+                              제공되면 QueryPlanner 대신 이 키워드 사용
+        """
         safe_mkdir(self.cfg.output_dir)
 
         # 1) Plan queries
-        queries = self.planner.plan(question, max_queries=5)
+        # 외부 키워드가 제공되면 우선 사용 (LLM이 추출한 영어 키워드)
+        if external_keywords and len(external_keywords) > 0:
+            print(f"[R-Agent] 외부 키워드 사용: {external_keywords}")
+            # 외부 키워드 기반 쿼리 생성
+            base = " ".join(external_keywords)
+            queries = [
+                base,
+                f"{base} deep learning",
+                f"{base} github code",
+                f"{base} neural network",
+                f"{base} implementation",
+            ][:5]
+        else:
+            # 기존 QueryPlanner 사용
+            queries = self.planner.plan(question, max_queries=5)
 
         # 2) Collect candidates from multiple queries
         candidates: List[Dict[str, Any]] = []
@@ -533,6 +644,24 @@ class RAgent:
                 "repo_summary": repo_summary,
             })
             time.sleep(self.cfg.sleep_between_requests)
+        
+        # 4) PDF에서 GitHub을 못 찾았으면 GitHub 검색 API로 시도
+        if not code_blocks and title:
+            print(f"[R-Agent] PDF에서 GitHub 없음, GitHub Search API 시도: {title[:50]}...")
+            searched_url = self.repo_analyzer.search_repo_by_paper(title, authors)
+            
+            if searched_url:
+                print(f"[R-Agent] ✅ GitHub 검색 성공: {searched_url}")
+                repo_summary = self.repo_analyzer.summarize_repo_structure(searched_url)
+                code_blocks.append({
+                    "kind": "github",
+                    "repo_url": searched_url,
+                    "source": "github_search_api",  # PDF가 아닌 검색으로 찾음
+                    "context_paragraph": f"논문 '{title}'과 관련된 GitHub 레포지토리로 검색됨",
+                    "role_summary": "GitHub 검색 API를 통해 찾은 관련 레포지토리입니다.",
+                    "repo_summary": repo_summary,
+                })
+                time.sleep(self.cfg.sleep_between_requests)
 
         result = {
             "type": "paper",

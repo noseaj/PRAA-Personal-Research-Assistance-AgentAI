@@ -1,168 +1,226 @@
 """
-Intent Classifier - LLM 기반 시나리오 분류
-scenarios.md 파일을 읽고 LLM이 시나리오를 판단
+Intent Classifier
+OpenRouter LLM을 사용하여 사용자 질문을 분석하고 적절한 시나리오 결정
 """
 import json
+import re
 from typing import Dict, Any
-from pathlib import Path
 from openai import OpenAI
 
 
 class IntentClassifier:
-    def __init__(self, llm_config: Dict[str, Any]):
+    """사용자 질문을 분석하여 시나리오 결정"""
+    
+    def __init__(self, openrouter_api_key: str, openrouter_url: str):
         """
         Args:
-            llm_config: LLM 설정 (api_key, base_url, model, temperature)
+            openrouter_api_key: OpenRouter API Key
+            openrouter_url: OpenRouter API URL
         """
         self.client = OpenAI(
-            api_key=llm_config["api_key"],
-            base_url=llm_config["base_url"],
+            base_url=openrouter_url,
+            api_key=openrouter_api_key
         )
-        self.model = llm_config["model"]
-        self.temperature = llm_config.get("temperature", 0.2)
-        
-        # 시나리오 가이드 로드
-        scenarios_path = Path(__file__).parent.parent / "scenarios.md"
-        with open(scenarios_path, 'r', encoding='utf-8') as f:
-            self.scenarios_guide = f.read()
+        self.model = "anthropic/claude-sonnet-4"  # 고성능 모델
     
     def classify(self, user_query: str) -> Dict[str, Any]:
         """
-        사용자 쿼리를 분석하여 시나리오 결정 (LLM 기반)
+        사용자 질문을 분석하여 시나리오 결정
         
+        Args:
+            user_query: 사용자 질문
+            
         Returns:
             {
-                "scenario": "R-only" | "CA-only" | "SA-only" | "SA-then-R" | "R-then-CA" | "full-pipeline",
-                "agents": ["R", "CA", "SA"],
-                "reasoning": "판단 근거",
-                "params": {...}
+                "scenario": "R-only",
+                "agents": ["R-Agent"],
+                "reasoning": "...",
+                "confidence": 0.95,
+                "extracted_info": {...}
             }
         """
-        print("\n" + "="*70)
-        print("🔍 Intent Classification 시작 (LLM 기반)")
-        print("="*70)
-        print(f"📝 입력 쿼리: {user_query}")
         
-        prompt = f"""아래 시나리오 가이드를 참고하여 사용자 질문에 가장 적합한 시나리오를 선택하세요.
-
-{self.scenarios_guide}
-
----
-
-사용자 질문: "{user_query}"
-
-위 질문을 분석하여 가장 적합한 시나리오를 선택하고, JSON 형식으로 답변하세요:
-
-{{
-    "scenario": "선택한 시나리오 (R-only, CA-only, SA-only, SA-then-R, R-then-CA, full-pipeline 중 하나)",
-    "reasoning": "이 시나리오를 선택한 이유 (한국어 1-2문장)",
-    "confidence": 0.0~1.0 사이의 신뢰도
-}}
-
-예시:
-- "object detection 논문 찾아줘" → R-only
-- "PyTorch ResNet 코드 분석해줘" → CA-only  
-- "내 연구 일지 분석해줘" → SA-only
-- "내 연구와 관련된 논문 찾아줘" → SA-then-R
-- "DETR 논문 찾고 코드 분석해줘" → R-then-CA
-
-JSON만 출력하세요."""
-
+        # LLM에게 질문 분석 요청
+        prompt = self._build_classification_prompt(user_query)
+        
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.temperature,
+                messages=[
+                    {"role": "system", "content": "당신은 사용자 질문을 분석하여 적절한 AI Agent 시나리오를 결정하는 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=500
             )
             
-            content = response.choices[0].message.content.strip()
+            result_text = response.choices[0].message.content.strip()
             
             # JSON 추출
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
+            result = self._extract_json(result_text)
             
-            result = json.loads(content)
-            scenario = result["scenario"]
-            reasoning = result.get("reasoning", "N/A")
-            confidence = result.get("confidence", 0.8)
+            # scenario에서 agents 목록 생성
+            result["agents"] = self.get_agent_list(result.get("scenario", "R-only"))
             
-            print(f"\n[LLM 판단 결과]")
-            print(f"   - 시나리오: {scenario}")
-            print(f"   - 신뢰도: {confidence:.2f}")
-            print(f"   - 근거: {reasoning}")
-            print("="*70)
+            # 추가 정보 추출 (경로, 논문명 등)
+            result["extracted_info"] = self._extract_additional_info(user_query)
             
-            # 시나리오에 따라 agents와 params 설정
-            return self._build_scenario_config(scenario, user_query, reasoning)
+            return result
             
         except Exception as e:
-            print(f"\n[Warning] LLM 분류 실패: {e}")
-            print("         기본 시나리오 (R-only) 사용")
-            print("="*70)
-            # Fallback: R-only
-            return {
-                "scenario": "R-only",
-                "agents": ["R"],
-                "reasoning": "LLM 분류 실패로 기본값 사용",
-                "params": {"R": {"research_question": user_query}}
-            }
+            print(f"[Intent Classifier] LLM 호출 실패: {e}")
+            # 기본값 반환 (규칙 기반)
+            return self._fallback_classification(user_query)
     
-    def _build_scenario_config(
-        self, 
-        scenario: str, 
-        query: str,
-        reasoning: str = ""
-    ) -> Dict[str, Any]:
-        """시나리오 설정 빌드"""
-        configs = {
-            "R-only": {
-                "scenario": "R-only",
-                "agents": ["R"],
-                "reasoning": reasoning,
-                "params": {"R": {"research_question": query}}
-            },
-            "CA-only": {
-                "scenario": "CA-only",
-                "agents": ["CA"],
-                "reasoning": reasoning,
-                "params": {"CA": {"local_code_path": None, "user_query": query}}
-            },
-            "SA-only": {
-                "scenario": "SA-only",
-                "agents": ["SA"],
-                "reasoning": reasoning,
-                "params": {"SA": {"research_log_path": None}}
-            },
-            "SA-then-R": {
-                "scenario": "SA-then-R",
-                "agents": ["SA", "R"],
-                "reasoning": reasoning,
-                "params": {
-                    "SA": {"research_log_path": None},
-                    "R": {"research_question": None}  # SA 결과로 채워짐
-                }
-            },
-            "R-then-CA": {
-                "scenario": "R-then-CA",
-                "agents": ["R", "CA"],
-                "reasoning": reasoning,
-                "params": {
-                    "R": {"research_question": query},
-                    "CA": {"local_code_path": None, "user_query": query}
-                }
-            },
-            "full-pipeline": {
-                "scenario": "full-pipeline",
-                "agents": ["SA", "R", "CA"],
-                "reasoning": reasoning,
-                "params": {
-                    "SA": {"research_log_path": None},
-                    "R": {"research_question": None},
-                    "CA": {"local_code_path": None, "user_query": query}
-                }
-            }
+    def _build_classification_prompt(self, user_query: str) -> str:
+        """분류 프롬프트 생성 - 검색 키워드도 함께 추출"""
+        return f"""다음 사용자 질문을 분석하여 가장 적합한 Agent 시나리오를 선택하세요.
+
+**사용 가능한 Agent:**
+- R-Agent: 논문 검색 및 GitHub 레포지토리 찾기
+- SA-Agent: 연구 일지 분석
+- CA-Agent: 코드 분석 및 논문 코드 비교
+
+**시나리오 옵션:**
+1. "R-only": 논문만 검색
+   - 예: "object detection 논문 찾아줘"
+   
+2. "SA-only": 연구 일지만 분석
+   - 예: "내 연구 일지를 분석해줘"
+   
+3. "CA-only": 코드만 분석
+   - 예: "내 코드를 분석해줘", "/path/to/code 분석해줘"
+   
+4. "R-then-CA": 논문 검색 → 코드 분석
+   - 예: "DETR 논문 찾고 코드 분석해줘", "object detection 논문 찾아서 내 코드와 비교해줘"
+   
+5. "SA-then-R": 연구 일지 분석 → 관련 논문 검색
+   - 예: "내 연구와 관련된 논문 찾아줘"
+
+---
+
+**사용자 질문:** "{user_query}"
+
+위 질문을 분석하여 JSON 형식으로 답변하세요:
+
+{{
+    "scenario": "선택한 시나리오",
+    "reasoning": "이 시나리오를 선택한 이유 (한국어 1-2문장)",
+    "confidence": 0.0~1.0 사이의 신뢰도,
+    "search_keywords": ["영어", "키워드", "목록"] (R-Agent 사용 시 필수! Semantic Scholar 검색용 영어 키워드 3-5개)
+}}
+
+**중요:**
+- search_keywords는 반드시 **영어**로 작성! (예: "DETR", "object detection", "transformer")
+- 사용자가 한글로 질문해도 영어 학술 키워드로 변환하세요
+- 유명 논문/모델명(DETR, ResNet, BERT 등)은 원래 이름 그대로 포함
+
+JSON만 출력하세요."""
+    
+    def _extract_json(self, text: str) -> Dict[str, Any]:
+        """텍스트에서 JSON 추출"""
+        # JSON 블록 찾기
+        json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except json.JSONDecodeError:
+                pass
+        
+        # 기본값
+        return {
+            "scenario": "R-only",
+            "reasoning": "JSON 파싱 실패, 기본 시나리오 사용",
+            "confidence": 0.5
+        }
+    
+    def _extract_additional_info(self, user_query: str) -> Dict[str, Any]:
+        """사용자 질문에서 추가 정보 추출 (경로, 논문명 등)"""
+        info = {
+            "local_code_path": None,
+            "paper_keywords": [],
         }
         
-        return configs.get(scenario, configs["R-only"])
+        # 경로 추출 (Linux/macOS/Windows)
+        path_patterns = [
+            r"(/[\w\-/\.]+)",  # Linux/macOS
+            r"([A-Za-z]:\\[^\s]+)",  # Windows
+            r"(~/[\w\-/\.]+)",  # Home directory
+        ]
+        
+        for pattern in path_patterns:
+            match = re.search(pattern, user_query)
+            if match:
+                info["local_code_path"] = match.group(1)
+                break
+        
+        # 논문 키워드 추출 (간단한 규칙)
+        # "DETR", "ResNet" 같은 대문자로 시작하는 단어
+        paper_keywords = re.findall(r'\b[A-Z][A-Za-z0-9]+\b', user_query)
+        if paper_keywords:
+            info["paper_keywords"] = paper_keywords
+        
+        return info
+    
+    def _fallback_classification(self, user_query: str) -> Dict[str, Any]:
+        """LLM 실패 시 규칙 기반 분류"""
+        query_lower = user_query.lower()
+        
+        # 연구 일지 관련
+        if any(keyword in query_lower for keyword in ["연구일지", "연구 일지", "내 연구"]):
+            if any(keyword in query_lower for keyword in ["논문", "paper", "찾"]):
+                return {
+                    "scenario": "SA-then-R",
+                    "agents": ["SA-Agent", "R-Agent"],
+                    "reasoning": "연구 일지 기반 논문 검색",
+                    "confidence": 0.7,
+                    "extracted_info": self._extract_additional_info(user_query)
+                }
+            else:
+                return {
+                    "scenario": "SA-only",
+                    "agents": ["SA-Agent"],
+                    "reasoning": "연구 일지 분석",
+                    "confidence": 0.8,
+                    "extracted_info": self._extract_additional_info(user_query)
+                }
+        
+        # 코드 분석 관련
+        if any(keyword in query_lower for keyword in ["코드", "code", "분석", "경로", "/"]):
+            if any(keyword in query_lower for keyword in ["논문", "paper"]):
+                return {
+                    "scenario": "R-then-CA",
+                    "agents": ["R-Agent", "CA-Agent"],
+                    "reasoning": "논문 찾고 코드 비교",
+                    "confidence": 0.75,
+                    "extracted_info": self._extract_additional_info(user_query)
+                }
+            else:
+                return {
+                    "scenario": "CA-only",
+                    "agents": ["CA-Agent"],
+                    "reasoning": "코드 분석",
+                    "confidence": 0.7,
+                    "extracted_info": self._extract_additional_info(user_query)
+                }
+        
+        # 기본값: 논문 검색
+        return {
+            "scenario": "R-only",
+            "agents": ["R-Agent"],
+            "reasoning": "논문 검색",
+            "confidence": 0.6,
+            "extracted_info": self._extract_additional_info(user_query)
+        }
+    
+    def get_agent_list(self, scenario: str) -> list[str]:
+        """시나리오에서 필요한 Agent 목록 반환"""
+        scenario_map = {
+            "R-only": ["R-Agent"],
+            "SA-only": ["SA-Agent"],
+            "CA-only": ["CA-Agent"],
+            "R-then-CA": ["R-Agent", "CA-Agent"],
+            "SA-then-R": ["SA-Agent", "R-Agent"],
+            "full-pipeline": ["SA-Agent", "R-Agent", "CA-Agent"],
+        }
+        return scenario_map.get(scenario, ["R-Agent"])

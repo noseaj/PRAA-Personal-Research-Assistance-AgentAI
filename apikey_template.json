@@ -1,6 +1,14 @@
 {
     "NotionAPIKey": "[Your Notion Integration API Key]",
-    "NotionDatabaseID": "[Your Notion Database ID (From shared link)]",
+    
+    "_comment_page": "Page 기반 방식 (추천) - Database 대신 Page에 직접 작성",
+    "NotionPageID_INPUT": "[Your Notion INPUT Page ID (optional)]",
+    "NotionPageID_OUTPUT": "[Your Notion OUTPUT Page ID - 결과가 여기에 작성됨]",
+    
+    "_comment_db": "Database 기반 방식 (기존) - Page가 없으면 이것을 사용",
+    "NotionDatabaseID_INPUT": "[Your Notion INPUT Database ID (optional)]",
+    "NotionDatabaseID_OUTPUT": "[Your Notion OUTPUT Database ID (optional)]",
+    
     "OpenRouterAPIKey": "[Your OpenRouter API Key]",
     "OpenRouterURL": "https://openrouter.ai/api/v1",
     "SemanticScholarAPIKey": "[Your SemanticsScholarAPIKey]",

@@ -1,6 +1,6 @@
 # APIKEY_INFO.json
 apikey.json
-
+/report
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
